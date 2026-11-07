@@ -1,117 +1,123 @@
 import WidgetKit
 import SwiftUI
-import AppIntents
 
-extension TelcelUsageEntry: TimelineEntry {}
+struct UsageEntry: TimelineEntry {
+    let date: Date
+    let usage: CarrierUsageData
+}
 
-public enum CarrierIntentChoice: String, AppEnum {
-    case auto = "auto"
-    case telcel = "telcel"
-    case bait = "bait"
-    case att = "att"
-    case movistar = "movistar"
+struct Provider: TimelineProvider {
+    private let placeholderUsage = CarrierUsageData(
+        carrier: .claro,
+        phoneNumber: "987654321",
+        planName: "Plan Postpago Perú",
+        usedGB: 12.5,
+        totalGB: 40.0,
+        freeSocialGB: 5.0,
+        balancePEN: 10.0,
+        expirationDate: "Corte: Día 15",
+        lastUpdated: Date()
+    )
+    
+    func placeholder(in context: Context) -> UsageEntry {
+        UsageEntry(date: Date(), usage: placeholderUsage)
+    }
 
-    public static var typeDisplayRepresentation: TypeDisplayRepresentation = "Operador"
-    public static var caseDisplayRepresentations: [CarrierIntentChoice: DisplayRepresentation] = [
-        .auto: "Predeterminado (App)",
-        .telcel: "Telcel",
-        .bait: "Bait",
-        .att: "AT&T",
-        .movistar: "Movistar"
-    ]
+    func getSnapshot(in context: Context, completion: @escaping (UsageEntry) -> ()) {
+        let data = SharedStorage.loadCachedUsage() ?? placeholderUsage
+        completion(UsageEntry(date: Date(), usage: data))
+    }
 
-    public var mobileCarrier: MobileCarrier? {
-        MobileCarrier(rawValue: rawValue)
+    func getTimeline(in context: Context, completion: @escaping (Timeline<UsageEntry>) -> ()) {
+        Task {
+            let usageData: CarrierUsageData
+            do {
+                usageData = try await TelcelNetworkService.shared.fetchUsage()
+            } catch {
+                usageData = SharedStorage.loadCachedUsage() ?? placeholderUsage
+            }
+            
+            let entry = UsageEntry(date: Date(), usage: usageData)
+            // Refrescar cada 2 horas para ahorrar batería y evitar bloqueos de IP
+            let nextUpdate = Calendar.current.date(byAdding: .hour, value: 2, to: Date())!
+            let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
+            completion(timeline)
+        }
     }
 }
 
-// MARK: - 1. AppIntents para Configuración y Recarga Interactiva desde el Widget (iOS 17+)
-struct TelcelWidgetConfigIntent: WidgetConfigurationIntent {
-    static var title: LocalizedStringResource = "Configuración del Widget"
-    static var description = IntentDescription("Selecciona tu operador o usa el predeterminado de la app.")
-
-    @Parameter(title: "Operador", default: .auto)
-    var carrier: CarrierIntentChoice
-}
-
-struct RefreshTelcelUsageIntent: AppIntent {
-    static var title: LocalizedStringResource = "Actualizar Consumo"
-
-    @Parameter(title: "Operador")
-    var carrier: String?
-
-    init() {}
-    init(carrier: String?) {
-        self.carrier = carrier
+struct MiTelcelWidgetEntryView : View {
+    var entry: Provider.Entry
+    
+    var brandColor: Color {
+        switch entry.usage.carrier {
+        case .claro: return .red
+        case .movistar: return .cyan
+        case .entel: return .blue
+        case .bitel: return .green
+        }
     }
 
-    func perform() async throws -> some IntentResult {
-        let c = carrier.flatMap { MobileCarrier(rawValue: $0) }
-        _ = await TelcelNetworkService.shared.fetchUsage(carrier: c, forceRefresh: true)
-        WidgetCenter.shared.reloadTimelines(ofKind: "MiTelcelUsageWidget")
-        return .result()
-    }
-}
-
-// MARK: - 2. TimelineProvider
-struct MiTelcelTimelineProvider: AppIntentTimelineProvider {
-    func placeholder(in context: Context) -> TelcelUsageEntry {
-        .sample
-    }
-
-    func snapshot(for configuration: TelcelWidgetConfigIntent, in context: Context) async -> TelcelUsageEntry {
-        TelcelUsageEntry.sample(for: configuration.carrier.mobileCarrier ?? TelcelNetworkService.selectedCarrier)
-    }
-
-    func timeline(for configuration: TelcelWidgetConfigIntent, in context: Context) async -> Timeline<TelcelUsageEntry> {
-        let entry = await TelcelNetworkService.shared.fetchUsage(
-            carrier: configuration.carrier.mobileCarrier
-        )
-        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 30, to: .now)!
-        return Timeline(entries: [entry], policy: .after(nextUpdate))
-    }
-}
-
-// MARK: - 3. Vista SwiftUI (Total Plan + Promo, Consumo y Fecha de Corte)
-public struct MiTelcelWidgetView: View {
-    public var entry: TelcelUsageEntry
-
-    public init(entry: TelcelUsageEntry) {
-        self.entry = entry
-    }
-
-    public var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            MiTelcelWidgetCardContent(entry: entry)
-
-            if !entry.isError {
-                Spacer(minLength: 8)
-
-                Button(intent: RefreshTelcelUsageIntent(carrier: entry.carrier)) {
-                    Text(entry.footerText)
-                        .font(.system(size: 11, weight: .regular))
-                        .foregroundStyle(Color(red: 0.60, green: 0.60, blue: 0.62))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(entry.usage.carrier.rawValue.uppercased())
+                    .font(.caption2)
+                    .fontWeight(.black)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(brandColor.opacity(0.2))
+                    .foregroundStyle(brandColor)
+                    .clipShape(Capsule())
+                
+                Spacer()
+                
+                if let saldo = entry.usage.balancePEN {
+                    Text(String(format: "S/ %.2f", saldo))
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+            }
+            
+            Spacer(minLength: 2)
+            
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(String(format: "%.1f", entry.usage.remainingGB))
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .widgetAccentable()
+                Text("GB libres")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            
+            ProgressView(value: entry.usage.usagePercentage)
+                .tint(brandColor)
+            
+            HStack {
+                Text("De \(Int(entry.usage.totalGB)) GB")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(entry.usage.expirationDate)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
             }
         }
-        .containerBackground(Color(red: 0.07, green: 0.07, blue: 0.07).opacity(0.9), for: .widget)
+        .containerBackground(.fill.tertiary, for: .widget)
     }
 }
 
-// MARK: - 4. Configuración Principal del Widget
 @main
-struct MiTelcelUsageWidget: Widget {
-    let kind: String = "MiTelcelUsageWidget"
+struct MiTelcelWidget: Widget {
+    let kind: String = "MiTelcelWidget"
 
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: kind, intent: TelcelWidgetConfigIntent.self, provider: MiTelcelTimelineProvider()) { entry in
-            MiTelcelWidgetView(entry: entry)
+        StaticConfiguration(kind: kind, provider: Provider()) { entry in
+            MiTelcelWidgetEntryView(entry: entry)
         }
-        .configurationDisplayName("Consumo Móvil")
-        .description("Muestra los GB disponibles, consumo y vigencia/corte de tu operador (Telcel, Bait, AT&T o Movistar).")
-        .supportedFamilies([.systemSmall])
+        .configurationDisplayName("Mi Consumo Perú")
+        .description("Monitorea tus gigas y saldo de Claro, Movistar, Entel y Bitel.")
+        .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
