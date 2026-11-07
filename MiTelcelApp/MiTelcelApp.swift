@@ -5,226 +5,131 @@ import WidgetKit
 struct MiTelcelApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            PeruConfigView()
         }
     }
 }
 
-struct ContentView: View {
-    @State private var carrier: MobileCarrier
-    @State private var phone: String
-    @State private var password: String
-    @State private var token: String
-    @State private var entry: TelcelUsageEntry
-    @State private var isLoading = false
-
-    init() {
-        let initialCarrier = TelcelNetworkService.selectedCarrier
-        _carrier = State(initialValue: initialCarrier)
-        let creds = TelcelNetworkService.loadCredentials(for: initialCarrier)
-        _phone = State(initialValue: creds.phone)
-        _password = State(initialValue: creds.password)
-        _token = State(initialValue: creds.token)
-        _entry = State(initialValue: TelcelUsageEntry.sample(for: initialCarrier))
+struct PeruConfigView: View {
+    @State private var selectedCarrier: PeruCarrier = .claro
+    @State private var phoneNumber: String = ""
+    @State private var secret: String = ""
+    @State private var isBearerToken: Bool = false
+    @State private var statusMessage: String = ""
+    @State private var isLoading: Bool = false
+    
+    var isValidPeruPhone: Bool {
+        let trimmed = phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.count == 9 && trimmed.first == "9" && trimmed.allSatisfy(\.isNumber)
     }
-
+    
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    // Preview Card del Widget
-                    VStack(alignment: .leading, spacing: 0) {
-                        MiTelcelWidgetCardContent(entry: entry)
-                        if !entry.isError {
-                            Spacer(minLength: 8)
-                            Text(entry.footerText)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
+            Form {
+                Section("Operador en Perú (+51)") {
+                    Picker("Operadora", selection: $selectedCarrier) {
+                        ForEach(PeruCarrier.allCases, id: \.self) { carrier in
+                            Text(carrier.rawValue).tag(carrier)
                         }
                     }
-                    .padding(16)
-                    .frame(width: 170, height: 170)
-                    .background(Color(red: 0.07, green: 0.07, blue: 0.07))
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .shadow(radius: 8)
-
-                    // Selector de Operador
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Operador Móvil")
-                            .font(.headline)
-
-                        Picker("Operador", selection: $carrier) {
-                            ForEach(MobileCarrier.allCases) { c in
-                                Text(c.displayName).tag(c)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .disabled(isLoading)
-                        .onChange(of: carrier) { _, newCarrier in
-                            switchCarrier(to: newCarrier)
-                        }
+                    .pickerStyle(.segmented)
+                    
+                    HStack {
+                        Text("+51")
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                        TextField("987654321 (9 dígitos)", text: $phoneNumber)
+                            .keyboardType(.numberPad)
                     }
-                    .padding(.horizontal)
-
-                    // Credenciales dinámicas por Operador
-                    VStack(alignment: .leading, spacing: 10) {
-                        switch carrier {
-                        case .telcel:
-                            Text("Cuenta Mi Telcel")
-                                .font(.headline)
-                            TextField("Número a 10 dígitos", text: $phone)
-                                #if os(iOS)
-                                .keyboardType(.numberPad)
-                                .textContentType(.username)
-                                .autocorrectionDisabled()
-                                #endif
-                                .textFieldStyle(.roundedBorder)
-                            SecureField("Contraseña Mi Telcel", text: $password)
-                                #if os(iOS)
-                                .textContentType(.password)
-                                #endif
-                                .textFieldStyle(.roundedBorder)
-                            Text("Tu número a 10 dígitos y contraseña del portal mitelcel.com.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                        case .bait:
-                            Text("Línea Mi Bait")
-                                .font(.headline)
-                            TextField("Número a 10 dígitos", text: $phone)
-                                #if os(iOS)
-                                .keyboardType(.numberPad)
-                                .textContentType(.username)
-                                .autocorrectionDisabled()
-                                #endif
-                                .textFieldStyle(.roundedBorder)
-                            HStack(spacing: 6) {
-                                Image(systemName: "checkmark.seal.fill")
-                                    .foregroundStyle(.green)
-                                Text("Bait no requiere contraseña. Solo tu número a 10 dígitos.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                        case .att:
-                            Text("Cuenta Mi AT&T")
-                                .font(.headline)
-                            TextField("Número a 10 dígitos", text: $phone)
-                                #if os(iOS)
-                                .keyboardType(.numberPad)
-                                .textContentType(.username)
-                                .autocorrectionDisabled()
-                                #endif
-                                .textFieldStyle(.roundedBorder)
-                            SecureField("Contraseña Mi AT&T", text: $password)
-                                #if os(iOS)
-                                .textContentType(.password)
-                                #endif
-                                .textFieldStyle(.roundedBorder)
-                            Text("Tu número y contraseña del portal miattweb.att.com.mx.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                        case .movistar:
-                            Text("Sesión Mi Movistar")
-                                .font(.headline)
-                            SecureField("Token de sesión p_id (ec_auth)", text: $token)
-                                #if os(iOS)
-                                .autocorrectionDisabled()
-                                #endif
-                                .textFieldStyle(.roundedBorder)
-                            Text("Debido a reCAPTCHA v3 en Movistar, pega tu token de sesión p_id activa.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.horizontal)
-
-                    // Desglose de Bolsas de Datos
-                    if !entry.buckets.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("\(entry.planName) • \(entry.cutoffPrefix)\(entry.cutoffDate.isEmpty ? "N/A" : entry.cutoffDate)")
-                                .font(.headline)
-
-                            ForEach(entry.buckets, id: \.id) { bucket in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Text(bucket.name)
-                                            .font(.subheadline.bold())
-                                        Spacer()
-                                        Text(String(format: "%.2f GB disp.", bucket.availableMB / entry.gbDivisor))
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Text(String(format: "Usados: %.2f GB de %.1f GB", bucket.consumedMB / entry.gbDivisor, bucket.totalMB / entry.gbDivisor))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .accessibilityElement(children: .combine)
-                                .padding(12)
-                                .background(Color.white.opacity(0.08))
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                            }
-                        }
-                        .padding(.horizontal)
-                    }
-
-                    // Botón de Actualizar Consumo
-                    Button {
-                        Task {
-                            isLoading = true
-                            TelcelNetworkService.selectedCarrier = carrier
-                            entry = await TelcelNetworkService.shared.fetchUsage(
-                                carrier: carrier,
-                                forceRefresh: true,
-                                overridePhone: phone,
-                                overridePassword: password,
-                                overrideToken: token
-                            )
-                            let updatedCreds = TelcelNetworkService.loadCredentials(for: carrier)
-                            phone = updatedCreds.phone
-                            password = updatedCreds.password
-                            token = updatedCreds.token
-                            WidgetCenter.shared.reloadAllTimelines()
-                            isLoading = false
-                        }
-                    } label: {
-                        Label(isLoading ? "Actualizando..." : "Actualizar Consumo Ahora", systemImage: "arrow.clockwise")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(carrier.brandColor)
-                    .disabled(isLoading)
-                    .padding(.horizontal)
                 }
-                .padding(.vertical, 24)
-            }
-            .navigationTitle("Consumo Móvil")
-            .onAppear {
-                Task {
-                    if let cached = await TelcelNetworkService.shared.loadCache(for: carrier) {
-                        entry = cached
+                
+                Section(header: Text("Autenticación"), footer: Text("En Entel y Movistar Perú se recomienda activar 'Usar Token Bearer' si tu línea inicia sesión solo con código SMS.")) {
+                    Toggle("Usar Token Bearer (OTP / Sesión)", isOn: $isBearerToken)
+                    
+                    SecureField(isBearerToken ? "Pega tu Bearer Token aquí" : "Contraseña de Mi \(selectedCarrier.rawValue)", text: $secret)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                
+                Section {
+                    Button(action: saveAndSync) {
+                        HStack {
+                            Spacer()
+                            if isLoading {
+                                ProgressView()
+                            } else {
+                                Text("Guardar y Actualizar Widget")
+                                    .fontWeight(.bold)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(!isValidPeruPhone || secret.isEmpty || isLoading)
+                    
+                    Button("Cargar Datos de Prueba (Probar Diseño)") {
+                        loadMockData()
+                    }
+                    .foregroundStyle(.orange)
+                }
+                
+                if !statusMessage.isEmpty {
+                    Section("Estado") {
+                        Text(statusMessage)
+                            .font(.footnote)
                     }
                 }
             }
+            .navigationTitle("Mi Consumo Perú 🇵🇪")
+            .onAppear(perform: loadSavedSettings)
         }
-        .preferredColorScheme(.dark)
     }
-
-    private func switchCarrier(to newCarrier: MobileCarrier) {
-        TelcelNetworkService.selectedCarrier = newCarrier
-        let creds = TelcelNetworkService.loadCredentials(for: newCarrier)
-        phone = creds.phone
-        password = creds.password
-        token = creds.token
+    
+    private func loadSavedSettings() {
+        let d = SharedStorage.defaults
+        if let raw = d.string(forKey: "carrier"), let c = PeruCarrier(rawValue: raw) {
+            selectedCarrier = c
+        }
+        phoneNumber = d.string(forKey: "phone") ?? ""
+        secret = d.string(forKey: "secret") ?? ""
+        isBearerToken = d.bool(forKey: "isBearerToken")
+    }
+    
+    private func saveAndSync() {
+        isLoading = true
+        statusMessage = "Sincronizando con \(selectedCarrier.rawValue) Perú..."
+        SharedStorage.saveCredentials(carrier: selectedCarrier, phone: phoneNumber, passwordOrToken: secret, isBearerToken: isBearerToken)
+        
         Task {
-            if let cached = await TelcelNetworkService.shared.loadCache(for: newCarrier) {
-                entry = cached
-            } else {
-                entry = TelcelUsageEntry.sample(for: newCarrier)
+            do {
+                _ = try await TelcelNetworkService.shared.fetchUsage()
+                await MainActor.run {
+                    WidgetCenter.shared.reloadAllTimelines()
+                    statusMessage = "¡Sincronizado con éxito! Revisa tu Widget en la pantalla de inicio."
+                    isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    statusMessage = "Guardado en caché. Error de API: \(error.localizedDescription)"
+                    isLoading = false
+                }
             }
         }
+    }
+    
+    private func loadMockData() {
+        let sample = CarrierUsageData(
+            carrier: selectedCarrier,
+            phoneNumber: isValidPeruPhone ? phoneNumber : "999888777",
+            planName: "Max Ilimitado S/ 69.90",
+            usedGB: 18.4,
+            totalGB: 45.0,
+            freeSocialGB: 10.0,
+            balancePEN: 15.50,
+            expirationDate: "Renueva el 25 Nov",
+            lastUpdated: Date()
+        )
+        SharedStorage.saveCachedUsage(sample)
+        WidgetCenter.shared.reloadAllTimelines()
+        statusMessage = "Datos de prueba de \(selectedCarrier.rawValue) enviados al Widget."
     }
 }
